@@ -114,11 +114,11 @@ $categories = $pdo->query("SELECT DISTINCT categorie FROM produits WHERE categor
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Produits | DENIS FBI STORE</title>
-    <link href="../assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="../assets/vendor/fontawesome/css/all.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="../assets/css/style.css?v=1.4">
     <link rel="manifest" href="../manifest.json">
-    <script src="../assets/vendor/sweetalert2/sweetalert2.all.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         /* Reusing consistent styles */
         .product-stat-card {
@@ -226,11 +226,16 @@ $categories = $pdo->query("SELECT DISTINCT categorie FROM produits WHERE categor
                             <h3 class="text-white fw-bold mb-0">Gestion du Catalogue</h3>
                             <div class="text-muted extra-small">Base de données Produits</div>
                         </div>
-                        <?php if (in_array(strtolower($_SESSION['role']), ['admin', 'vendeur', 'super admin'])): ?>
-                            <button class="btn btn-primary rounded-pill px-4" data-bs-toggle="modal"
-                                data-bs-target="#addProductModal">
-                                <i class="fa-solid fa-plus me-2"></i>Nouveau Produit
-                            </button>
+                        <?php if (in_array($session_role, ['admin', 'vendeur', 'super_admin'])): ?>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-primary rounded-pill px-4" data-bs-toggle="modal"
+                                    data-bs-target="#addProductModal">
+                                    <i class="fa-solid fa-plus me-2"></i>Ajouter un produit
+                                </button>
+                                <button class="btn btn-premium rounded-pill px-4" onclick="openCategoryModal()">
+                                    <i class="fa-solid fa-tags me-2"></i>Catégorie
+                                </button>
+                            </div>
                         <?php endif; ?>
                     </div>
 
@@ -477,6 +482,56 @@ $categories = $pdo->query("SELECT DISTINCT categorie FROM produits WHERE categor
         </div>
     </div>
 
+    <!-- Category management Modal -->
+    <div class="modal fade" id="categoryModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content bg-dark border border-white border-opacity-10 text-white rounded-4 shadow-lg">
+                <div class="modal-header border-bottom border-white border-opacity-10">
+                    <h5 class="modal-title fw-bold">Gestion des Catégories</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <form id="categoryForm" class="mb-4">
+                        <input type="hidden" name="id_category" id="cat_id">
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-5">
+                                <label class="form-label small text-muted text-uppercase fw-bold">Nom</label>
+                                <input type="text" name="name" id="cat_name"
+                                    class="form-control bg-black bg-opacity-25 border-white border-opacity-10 text-white rounded-3"
+                                    required>
+                            </div>
+                            <div class="col-md-5">
+                                <label class="form-label small text-muted text-uppercase fw-bold">Description</label>
+                                <input type="text" name="description" id="cat_desc"
+                                    class="form-control bg-black bg-opacity-25 border-white border-opacity-10 text-white rounded-3">
+                            </div>
+                            <div class="col-md-2">
+                                <button type="submit" class="btn btn-primary w-100 rounded-3" id="btnSaveCat">
+                                    <i class="fa-solid fa-save"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+
+                    <div class="table-responsive" style="max-height: 300px;">
+                        <table class="table table-dark table-hover mb-0 align-middle">
+                            <thead class="extra-small text-uppercase text-muted">
+                                <tr>
+                                    <th>Nom</th>
+                                    <th>Description</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="categoryTableBody">
+                                <!-- AJAX content -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Details Modal -->
     <div class="modal fade" id="productDetailsModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered">
@@ -527,7 +582,7 @@ $categories = $pdo->query("SELECT DISTINCT categorie FROM produits WHERE categor
         </div>
     </div>
 
-    <script src="../assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         function viewProductDetails(prod) {
             document.getElementById('detId').innerText = '#' + prod.id_produit.toString().padStart(4, '0');
@@ -562,6 +617,95 @@ $categories = $pdo->query("SELECT DISTINCT categorie FROM produits WHERE categor
                 row.style.display = text.includes(term) ? '' : 'none';
             });
         });
+
+        // Category AJAX logic
+        let categories = [];
+        const catModal = new bootstrap.Modal(document.getElementById('categoryModal'));
+
+        function openCategoryModal() {
+            loadCategories();
+            catModal.show();
+        }
+
+        async function loadCategories() {
+            try {
+                const res = await fetch('../../backend/actions/categories/manage.php?action=list');
+                const result = await res.json();
+                if (result.success) {
+                    categories = result.data;
+                    renderCategories();
+                    updateDatalist();
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function renderCategories() {
+            const tbody = document.getElementById('categoryTableBody');
+            tbody.innerHTML = categories.map(c => `
+                <tr class="border-white border-opacity-5">
+                    <td class="fw-bold text-white">${c.name}</td>
+                    <td class="small text-muted">${c.description || ''}</td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-info border-0" onclick='editCategory(${JSON.stringify(c)})'>
+                            <i class="fa-solid fa-pen"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger border-0" onclick="deleteCategory(${c.id_category})">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function updateDatalist() {
+            const dl = document.getElementById('catList');
+            dl.innerHTML = categories.map(c => `<option value="${c.name}">`).join('');
+        }
+
+        function editCategory(c) {
+            document.getElementById('cat_id').value = c.id_category;
+            document.getElementById('cat_name').value = c.name;
+            document.getElementById('cat_desc').value = c.description;
+            document.getElementById('btnSaveCat').innerHTML = '<i class="fa-solid fa-check"></i>';
+        }
+
+        document.getElementById('categoryForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const action = formData.get('id_category') ? 'update' : 'add';
+            formData.append('action', action);
+
+            try {
+                const res = await fetch('../../backend/actions/categories/manage.php', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await res.json();
+                if (result.success) {
+                    this.reset();
+                    document.getElementById('cat_id').value = '';
+                    document.getElementById('btnSaveCat').innerHTML = '<i class="fa-solid fa-save"></i>';
+                    loadCategories();
+                    Swal.fire({ icon: 'success', title: result.message, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
+                } else {
+                    Swal.fire({ icon: 'error', title: result.error });
+                }
+            } catch (e) { Swal.fire({ icon: 'error', title: 'Erreur réseau' }); }
+        });
+
+        async function deleteCategory(id) {
+            if (!confirm("Supprimer cette catégorie ?")) return;
+            try {
+                const res = await fetch(`../../backend/actions/categories/manage.php?action=delete&id_category=${id}`);
+                const result = await res.json();
+                if (result.success) {
+                    loadCategories();
+                    Swal.fire({ icon: 'success', title: result.message, toast: true, position: 'top-end', showConfirmButton: false, timer: 2000 });
+                } else {
+                    Swal.fire({ icon: 'error', title: result.error });
+                }
+            } catch (e) { Swal.fire({ icon: 'error', title: 'Erreur réseau' }); }
+        }
     </script>
 </body>
 

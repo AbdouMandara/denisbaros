@@ -76,87 +76,74 @@ try {
         }
     }
 
-    // 2. Calculate Total & Prepare Sale Data
-    $total_calculated = 0;
+    // 2. Calculate Totals
+    $total_shop = 0;
     foreach ($items as $item) {
-        $total_calculated += ($item['price'] * $item['qty']);
+        $total_shop += ($item['price'] * $item['qty']);
     }
 
-    // If reseller mode, use final_price, else use calculated total
-    $sale_price = $reseller_id ? ($final_price ?: $total_calculated) : $total_calculated;
-
-    // Commission? Schema has `commission_partenaire`.
+    $sale_price = $total_shop;
     $commission = 0;
+
+    // Reseller Mode handling
     if ($reseller_id) {
-        // Calculate commission based on reseller settings?
-        // Or is it just the difference?
-        // Schema: `commission_partenaire DECIMAL(12,2) DEFAULT 0.00`
-        // Logic: Usually (Final Price - Shop Price) if Reseller mode?
-        // OR a percentage?
-        // Implementation Plan didn't specify. I'll stick to a simple logic:
-        // Assume commission is 0 for now unless defined.
-        // Or if the prompt implies "Mettez une commission", I'd do it.
-        // Let's leave it 0 or calculate if `revendeurs` table has `taux_commission_fixe`.
-        // Let's fetch reseller rate.
-        $stmt = $pdo->prepare("SELECT taux_commission_fixe FROM revendeurs WHERE id_revendeur = ?");
-        $stmt->execute([$reseller_id]);
-        $rate = $stmt->fetchColumn();
-        if ($rate > 0) {
-            // If rate is percentage? Schema `taux_commission_fixe DECIMAL(5,2)`. Usually % like 10.00.
-            // $commission = $sale_price * ($rate / 100);
-            // Or is it a fixed amount per sale? "taux_commission_fixe" sounds like rate or fixed amount.
-            // Let's assume percentage for now or 0.
-            // If it creates issues, I'll fix later.
-            // Safest: 0.
+        if ($final_price > 0) {
+            $sale_price = $final_price;
+            $commission = $final_price - $total_shop;
+        } else {
+            // If no final price set, use shop price and 0 commission
+            $sale_price = $total_shop;
             $commission = 0;
         }
     }
 
     // 3. Insert Vente
-    // Schema: ventes (id_client, id_vendeur, id_revendeur, prix_revente_final, commission_partenaire, type_paiement, garantie, date_vente)
     $type_paiement = $input['type_paiement'] ?? 'cash';
     $stmt = $pdo->prepare("INSERT INTO ventes (id_client, id_vendeur, id_revendeur, prix_revente_final, commission_partenaire, type_paiement, garantie, date_vente) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
     $stmt->execute([$client_id, $user_id, $reseller_id ?: null, $sale_price, $commission, $type_paiement, $garantie]);
     $sale_id = $pdo->lastInsertId();
 
-    // 4. Process Items (Details & Stock)
+    // 4. Process Items
     foreach ($items as $item) {
         $prod_id = $item['id'];
-        $qty = $item['qty'];
+        $qty = (int) $item['qty'];
         $unit_price = $item['price'];
         $subtotal = $unit_price * $qty;
 
-        // Check Stock Lock
-        $stmt = $pdo->prepare("SELECT stock_actuel FROM produits WHERE id_produit = ? FOR UPDATE");
+        // Stock check
+        $stmt = $pdo->prepare("SELECT designation, stock_actuel FROM produits WHERE id_produit = ? FOR UPDATE");
         $stmt->execute([$prod_id]);
-        $current_stock = $stmt->fetchColumn();
+        $prod = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($current_stock < $qty) {
-            throw new Exception($block_negative_stock === '1' ? "Stock insuffisant (stock négatif interdit). Produit ID $prod_id" : "Stock insuffisant pour le produit ID $prod_id");
+        if (!$prod)
+            throw new Exception("Produit ID $prod_id non trouvé.");
+
+        if ($prod['stock_actuel'] < $qty) {
+            throw new Exception("Stock insuffisant pour {$prod['designation']} ({$prod['stock_actuel']} disponible, $qty demandé).");
         }
 
         // Insert Detail
-        // Schema: vente_details (id_vente, id_produit, quantite, prix_unitaire, sous_total)
         $stmt = $pdo->prepare("INSERT INTO vente_details (id_vente, id_produit, quantite, prix_unitaire, sous_total) VALUES (?, ?, ?, ?, ?)");
         $stmt->execute([$sale_id, $prod_id, $qty, $unit_price, $subtotal]);
 
         // Update Stock
-        $new_stock = $current_stock - $qty;
+        $new_stock = $prod['stock_actuel'] - $qty;
         $stmt = $pdo->prepare("UPDATE produits SET stock_actuel = ? WHERE id_produit = ?");
         $stmt->execute([$new_stock, $prod_id]);
 
-        // Log Movement
-        // Schema: mouvements_stock (id_produit, id_user, type_mouvement, quantite_avant, quantite_apres, motif_ajustement)
-        // type_mouvement enum: 'vente'
-        $stmt = $pdo->prepare("INSERT INTO mouvements_stock (id_produit, id_user, type_mouvement, quantite_avant, quantite_apres, motif_ajustement) VALUES (?, ?, 'vente', ?, ?, ?)");
-        $stmt->execute([$prod_id, $user_id, $current_stock, $new_stock, "Vente #$sale_id"]);
+        // Mouvement de stock
+        logStockMovement($pdo, $prod_id, $user_id, 'vente', $qty, "Vente effective #$sale_id");
     }
 
+    // Log Activity
+    logActivity($pdo, $user_id, "Vente validée", "Vente #$sale_id - Total: $sale_price FCFA");
+
     $pdo->commit();
-    echo json_encode(['success' => true, 'sale_id' => $sale_id, 'message' => 'Vente enregistrée avec succès']);
+    echo json_encode(['success' => true, 'sale_id' => $sale_id, 'message' => "Vente #$sale_id validée et enregistrée avec succès."]);
 
 } catch (Exception $e) {
-    $pdo->rollBack();
-    error_log("Sale Error: " . $e->getMessage());
-    echo json_encode(['success' => false, 'message' => "Erreur lors de la vente: " . $e->getMessage()]);
+    if ($pdo->inTransaction())
+        $pdo->rollBack();
+    error_log("Sale Process Error: " . $e->getMessage());
+    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
 }
